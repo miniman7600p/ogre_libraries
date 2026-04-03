@@ -368,6 +368,8 @@ function ESP.new(globalOptions)
 	self.entries = {}
 	self.folderTrackers = {}
 	self.playerTrackerConnections = {}
+	self.whitelist = normalizeFilter(self.globalOptions.Whitelist)
+	self.blacklist = normalizeFilter(self.globalOptions.Blacklist)
 	self.connection = nil
 	return self
 end
@@ -379,6 +381,7 @@ function ESP:SetEnabled(enabled)
 			hideDrawings(entry.drawings)
 		end
 	end
+	return self
 end
 
 function ESP:Enable()
@@ -409,34 +412,54 @@ function ESP:SetOptions(options)
 	if options and options.Blacklist ~= nil then
 		self.blacklist = normalizeFilter(options.Blacklist)
 	end
+	return self
 end
 
 function ESP:SetWhitelist(list)
 	self.whitelist = normalizeFilter(list)
 	self.globalOptions.Whitelist = list
+	return self
 end
 
 function ESP:SetBlacklist(list)
 	self.blacklist = normalizeFilter(list)
 	self.globalOptions.Blacklist = list
+	return self
 end
 
 function ESP:AddToWhitelist(value)
 	local values = appendFilterValue(self.globalOptions.Whitelist, value)
-	self:SetWhitelist(values)
+	return self:SetWhitelist(values)
 end
 
 function ESP:AddToBlacklist(value)
 	local values = appendFilterValue(self.globalOptions.Blacklist, value)
-	self:SetBlacklist(values)
+	return self:SetBlacklist(values)
 end
 
 function ESP:ClearWhitelist()
-	self:SetWhitelist(nil)
+	return self:SetWhitelist(nil)
 end
 
 function ESP:ClearBlacklist()
-	self:SetBlacklist(nil)
+	return self:SetBlacklist(nil)
+end
+
+function ESP:_resolvePreset(options)
+	local merged = cloneOptions(options)
+	if merged.Preset == nil then
+		merged.Preset = self.globalOptions.Preset
+	end
+	local presetName = merged.Preset
+	local preset = presetName and self.profiles[presetName] or nil
+	if preset then
+		for key, value in pairs(preset) do
+			if merged[key] == nil then
+				merged[key] = value
+			end
+		end
+	end
+	return merged
 end
 
 function ESP:_createEntry(instance, options)
@@ -464,12 +487,8 @@ function ESP:Add(instance, options)
 		return self.entries[instance]
 	end
 
-	local entry = {
-		instance = instance,
-		options = cloneOptions(options),
-		drawings = createDrawings(),
-	}
-
+	local entry = self:_createEntry(instance, options)
+	entry.manual = true
 	self.entries[instance] = entry
 	return entry
 end
@@ -482,6 +501,7 @@ function ESP:Remove(instance)
 
 	removeDrawings(entry.drawings)
 	self.entries[instance] = nil
+	return self
 end
 
 function ESP:Clear()
@@ -495,6 +515,87 @@ function ESP:Clear()
 	for instance in pairs(self.entries) do
 		self:Remove(instance)
 	end
+	return self
+end
+
+function ESP:Get(instance)
+	return self.entries[instance]
+end
+
+function ESP:Has(instance)
+	return self.entries[instance] ~= nil
+end
+
+function ESP:SetDefaultOptions(options)
+	return self:SetOptions(options)
+end
+
+function ESP:SetDefaultPreset(name)
+	self.globalOptions.Preset = name
+	return self
+end
+
+function ESP:SetEntryOptions(instance, options)
+	local entry = self.entries[instance]
+	if not entry then
+		return nil
+	end
+	entry.options = self:_resolvePreset(options)
+	return entry
+end
+
+function ESP:RegisterPreset(name, options)
+	if type(name) ~= "string" or name == "" then
+		return nil
+	end
+
+	self.profiles[name] = copyTable(options or {})
+	return self
+end
+
+function ESP:AddList(list, options)
+	if type(list) ~= "table" then
+		return self
+	end
+
+	for _, instance in ipairs(list) do
+		self:Add(instance, options)
+	end
+
+	return self
+end
+
+function ESP:RemoveList(list)
+	if type(list) ~= "table" then
+		return self
+	end
+
+	for _, instance in ipairs(list) do
+		self:Remove(instance)
+	end
+
+	return self
+end
+
+function ESP:_trackInstance(instance, options)
+	local entry = self.entries[instance]
+	if not entry then
+		entry = self:_createEntry(instance, options)
+		self.entries[instance] = entry
+	end
+
+	entry.trackerRefs = (entry.trackerRefs or 0) + 1
+	return entry
+end
+
+function ESP:_untrackInstance(instance)
+	local entry = self.entries[instance]
+	if not entry then
+		return
+	end
+
+	entry.trackerRefs = math.max((entry.trackerRefs or 0) - 1, 0)
+	self:_tryRemoveEntry(entry)
 end
 
 function ESP:_getOption(entry, key)
@@ -809,10 +910,24 @@ function ESP:AddFolder(folder, options)
 	return tracker
 end
 
+function ESP:AddFolderChildren(folder, options)
+	local folderOptions = copyTable(options or {})
+	folderOptions.Descendants = false
+	self:AddFolder(folder, folderOptions)
+	return self
+end
+
+function ESP:AddFolderDescendants(folder, options)
+	local folderOptions = copyTable(options or {})
+	folderOptions.Descendants = true
+	self:AddFolder(folder, folderOptions)
+	return self
+end
+
 function ESP:RemoveFolder(folder)
 	local tracker = self.folderTrackers[folder]
 	if not tracker then
-		return
+		return self
 	end
 
 	disconnectConnections(tracker.connections)
@@ -827,11 +942,12 @@ function ESP:RemoveFolder(folder)
 	end
 
 	self.folderTrackers[folder] = nil
+	return self
 end
 
 function ESP:TrackPlayers(options)
 	if #self.playerTrackerConnections > 0 then
-		return
+		return self
 	end
 
 	local trackerOptions = copyTable(options or {})
@@ -853,11 +969,12 @@ function ESP:TrackPlayers(options)
 
 	table.insert(self.playerTrackerConnections, Players.PlayerAdded:Connect(addPlayer))
 	table.insert(self.playerTrackerConnections, Players.PlayerRemoving:Connect(removePlayer))
+	return self
 end
 
 function ESP:UntrackPlayers()
 	if #self.playerTrackerConnections == 0 then
-		return
+		return self
 	end
 
 	disconnectConnections(self.playerTrackerConnections)
@@ -866,6 +983,7 @@ function ESP:UntrackPlayers()
 	for _, player in ipairs(Players:GetPlayers()) do
 		self:_untrackInstance(player)
 	end
+	return self
 end
 
 function ESP:Update()
@@ -894,12 +1012,13 @@ end
 
 function ESP:Start()
 	if self.connection then
-		return
+		return self
 	end
 
 	self.connection = RunService.RenderStepped:Connect(function()
 		self:Update()
 	end)
+	return self
 end
 
 function ESP:Stop()
@@ -911,6 +1030,7 @@ function ESP:Stop()
 	for _, entry in pairs(self.entries) do
 		hideDrawings(entry.drawings)
 	end
+	return self
 end
 
 ESP.add = ESP.Add
